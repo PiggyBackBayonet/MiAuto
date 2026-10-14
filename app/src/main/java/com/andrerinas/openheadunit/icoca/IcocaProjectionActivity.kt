@@ -3,6 +3,7 @@ package com.andrerinas.openheadunit.icoca
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
@@ -40,7 +41,8 @@ class IcocaProjectionActivity : AppCompatActivity() {
         hideSystemUi()
 
         val bridge = App.provide(this).icocaBridge
-        findViewById<SurfaceView>(R.id.icoca_surface).holder.addCallback(
+        val surfaceView = findViewById<SurfaceView>(R.id.icoca_surface)
+        surfaceView.holder.addCallback(
             object : SurfaceHolder.Callback {
                 override fun surfaceCreated(holder: SurfaceHolder) {
                     AppLog.i("ICCOA projection: surfaceCreated")
@@ -59,6 +61,16 @@ class IcocaProjectionActivity : AppCompatActivity() {
                 }
             }
         )
+
+        // Touch back-channel (UIBC). The SDK hands the phone's video to this Surface but never sees
+        // the car's panel, so without this the picture is a one-way mirror — the user can watch but
+        // not tap. Mirrors what the SDK's own `UCarSurfaceView.onTouchEvent` does: raw action,
+        // per-pointer id, and coordinates scaled into the display area the SDK expects.
+        surfaceView.isClickable = true
+        surfaceView.setOnTouchListener { view, event ->
+            forwardTouch(view as SurfaceView, event)
+            true
+        }
 
         findViewById<View>(R.id.icoca_disconnect).setOnClickListener {
             AppLog.i("ICCOA projection: disconnect tapped")
@@ -82,6 +94,37 @@ class IcocaProjectionActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         isForeground = true
+    }
+
+    /**
+     * Hands one touch event to the phone.
+     *
+     * The SDK expects coordinates in the display area it was told about
+     * (`UCarConfig.setVideoDisplayWidth/Height`) and converts them to the phone's own screen with
+     * `x / displayWidth * sourceWidth`. The SurfaceView is full-screen here so the two usually
+     * coincide, but the scale is applied explicitly so a smaller surface (or a future windowed
+     * mode) still lines up with what the user touched.
+     */
+    private fun forwardTouch(view: SurfaceView, event: MotionEvent) {
+        val bridge = App.provide(view.context).icocaBridge
+        val count = event.pointerCount
+        val trackIds = IntArray(count)
+        val xs = IntArray(count)
+        val ys = IntArray(count)
+        val (displayW, displayH) = bridge.displaySize()
+        val viewW = if (view.width > 0) view.width else displayW
+        val viewH = if (view.height > 0) view.height else displayH
+        for (i in 0 until count) {
+            val pointerId = event.getPointerId(i)
+            trackIds[i] = pointerId
+            val index = event.findPointerIndex(pointerId)
+            xs[i] = (event.getX(index) * displayW / viewW).toInt()
+            ys[i] = (event.getY(index) * displayH / viewH).toInt()
+        }
+        // Raw action (NOT actionMasked) and raw coordinates: this is exactly what the SDK's own
+        // UCarSurfaceView.onTouchEvent() passes, so it is what the phone-side UIBC decoder expects.
+        bridge.sendTouch(event.action, count, trackIds, xs, ys)
+        if (event.action == MotionEvent.ACTION_DOWN) view.performClick()
     }
 
     override fun onStop() {

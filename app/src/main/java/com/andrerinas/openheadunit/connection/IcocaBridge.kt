@@ -112,8 +112,24 @@ class IcocaBridge(context: Context) : IccoaManager.Listener {
     fun setScreenSize(width: Int, height: Int) = manager.setScreenSize(width, height)
 
     /**
-     * Hands the projection [surface] to the SDK. Idempotent: the SDK ignores a repeated call for
-     * an already-casting surface, and [IccoaManager] only starts the cast once.
+     * Size of the projection area we declared to the SDK (`videoDisplayWidth/Height`).
+     *
+     * Touch coordinates must be expressed in this space: the SDK scales them to the phone's own
+     * screen with `x / displayWidth * sourceWidth` (see `UibcManager.getTouchCoordinateX`).
+     */
+    fun displaySize(): Pair<Int, Int> = manager.displayWidth to manager.displayHeight
+
+    /**
+     * Sends one touch event to the phone (the SDK's UIBC back-channel), mirroring what the SDK's
+     * own `UCarSurfaceView.onTouchEvent` does: raw action, per-pointer id and display-space x/y.
+     */
+    fun sendTouch(action: Int, count: Int, trackIds: IntArray, xs: IntArray, ys: IntArray): Boolean =
+        manager.sendTouchEvent(action, count, trackIds, xs, ys)
+
+    /**
+     * Hands the projection [surface] to the SDK. Idempotent for the same surface: the SDK ignores a
+     * repeated call for an already-casting surface. A *different* surface however means the old one
+     * is gone, and the cast is torn down and re-established on the new one.
      */
     fun setSurface(surface: Surface) = manager.setSurface(surface)
 
@@ -130,14 +146,35 @@ class IcocaBridge(context: Context) : IccoaManager.Listener {
     }
 
     override fun onConnectionState(stateCode: Int) {
+        // Codes the SDK actually emits, as seen on hardware:
+        //   0  DISCONNECTED   → back to advertising
+        //   1  CONNECTING     → pairing
+        //   2  CONNECTED      → session is up
+        //   3  ESTABLISHED    → session is up
+        //   4  (connected)    → session is up
+        //   -1 (transient/unknown) → emitted right after a successful negotiation; must NOT be
+        //                            treated as "disconnected", or the just-established session is
+        //                            thrown away and the projection activity is never opened.
         val phase = when (stateCode) {
             0 -> Phase.Advertising
-            1, 2 -> Phase.Pairing
-            3 -> Phase.Connected
-            else -> Phase.Advertising
+            1 -> Phase.Pairing
+            2, 3, 4 -> Phase.Connected
+            else -> null
         }
-        AppLog.i("ICCOA: connection state $stateCode -> $phase")
-        updatePhase(phase)
+        AppLog.i("ICCOA: connection state $stateCode -> ${phase?.name ?: "keep ${_state.value.phase}"}")
+        if (phase != null) updatePhase(phase)
+    }
+
+    /**
+     * Negotiation progress (0..100). 100 means the link is up.
+     *
+     * This is the most reliable "the phone is connected" signal the SDK gives: the numeric state
+     * codes can lag or turn into the transient -1, while the progress march to 100 is unambiguous.
+     * Reaching it must open the projection screen, because that screen is the only thing that
+     * provides the Surface the SDK casts into.
+     */
+    override fun onConnectProgress(progress: Int) {
+        if (progress >= 100) updatePhase(Phase.Connected)
     }
 
     override fun onPinCode(pinCode: String?, carDeviceName: String?) {

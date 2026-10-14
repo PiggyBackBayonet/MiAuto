@@ -344,15 +344,30 @@ dependencies {
 // =====================================================================
 val sdkDex = file("libs/icar-sdk.dex")
 val sdkDexBytes: ByteArray = if (sdkDex.exists()) sdkDex.readBytes() else ByteArray(0)
+// SDK 位置：ANDROID_HOME / ANDROID_SDK_ROOT → local.properties 的 sdk.dir → 旧的硬编码兜底。
+// ★ 原先只认环境变量，读不到就掉到作者机器上的 C:/Users/Administrator/... —— 于是本机
+//   （SDK 装在工程目录、只在 local.properties 里声明）构建时 zipalign/apksigner 全都找不到。
 val iccoaSdkHome = (System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT"))
     ?.let { file(it) }
+    ?: rootProject.file("local.properties").takeIf { it.exists() }?.let { lp ->
+        Properties().apply { FileInputStream(lp).use { s -> load(s) } }
+            .getProperty("sdk.dir")?.let { file(it) }
+    }
     ?: file("C:/Users/Administrator/AppData/Local/Android/Sdk")
 val iccoaBuildToolsDir = iccoaSdkHome.resolve("build-tools").listFiles()
     ?.filter { it.isDirectory }
-    ?.filter { it.resolve("zipalign").exists() && it.resolve("lib/apksigner.jar").exists() }
+    // ★ Windows 上 zipalign 叫 zipalign.exe：只探测无扩展名的 "zipalign" 会一个都不匹配，
+    //   于是静默掉到不存在的 build-tools/34.0.0，最后 exec 抛"找不到 zipalign"。
+    ?.filter {
+        (it.resolve("zipalign").exists() || it.resolve("zipalign.exe").exists()) &&
+            it.resolve("lib/apksigner.jar").exists()
+    }
     ?.maxByOrNull { it.name }
     ?: iccoaSdkHome.resolve("build-tools/34.0.0")
-val iccoaZipalign = iccoaBuildToolsDir.resolve("zipalign")
+val iccoaZipalign = listOf("zipalign", "zipalign.exe")
+    .map { iccoaBuildToolsDir.resolve(it) }
+    .firstOrNull { it.exists() }
+    ?: iccoaBuildToolsDir.resolve("zipalign")
 val iccoaApksignerJar = iccoaBuildToolsDir.resolve("lib/apksigner.jar")
 val iccoaDebugKeystore = file(System.getProperty("user.home")).resolve(".android/debug.keystore")
 

@@ -37,8 +37,17 @@ public class IccoaManager {
     /** 事件回调。由 UI / 导航桥接实现。 */
     public interface Listener {
         void onLog(String msg);
-        /** 已连接状态变化：0 断开 / 1 连接中 / 2 已连接 / 3 已建立 */
+        /** 已连接状态变化：0 断开 / 1 连接中 / 2 已连接 / 3 已建立 / 4 已连接(SDK 实测) / -1 瞬时未知 */
         void onConnectionState(int state);
+
+        /**
+         * 协商进度 0..100。
+         *
+         * <p><b>100 = 链路已建立</b>，这是「手机连上了」最可靠的信号：SDK 随后会把状态打成
+         * {@code -1}（瞬时/未知），若只看状态码会把刚建立的会话误判成断开，投屏页就永远不会被
+         * 拉起来 —— 而投屏页正是那个提供 Surface 的地方，缺了它手机连上也没地方画。
+         */
+        void onConnectProgress(int progress);
         void onPinCode(String pinCode, String carDeviceName);
         void onCastStarted();
         /** 手机导航信息（POC-2 / BYD 仪表与 HUD 的数据源）。 */
@@ -74,8 +83,50 @@ public class IccoaManager {
      */
     private static final long AUTO_REFRESH_INTERVAL_MS = 30_000L;
 
-    /** 会话是否正在进行（手机连接中或已连接）。由连接回调维护，看门狗据此避让。 */
+    /**
+     * 协商「僵住」多久之后允许看门狗重播把链路救回来。
+     *
+     * <p>手机一旦开始协商（{@code newState == 1}），看门狗就不能立刻重播 —— 否则首次配对
+     * （用户要看车机上的 6 位码、再在手机上确认）会被打断、配对码被换掉，表现就是手机上
+     * 「认证失败/配对失败」。但也不能像早先那样把 CONNECTING 当成「会话进行中」无限期避让：
+     * SDK 若一直停在 CONNECTING 不回落到 DISCONNECTED，看门狗就再也不会重播，手机端那个
+     * 「能自己回来的配对弹窗」也就永远不回来了（实测反馈：打完补丁后连提示都没有了）。
+     *
+     * <p>所以取中间值：协商期间每轮先让位，只有当「距最后一次协商进展」超过这个时长，才判定
+     * 为僵死并重播。新配对码下发（onPinCode）与协商进度回调都会刷新这个计时。
+     */
+    private static final long STUCK_CONNECTING_MS = 45_000L;
+
+    /**
+     * 车机热点（SoftAP）开关。
+     *
+     * <p>{@code false} = 只宣称 WiFi P2P，不宣称「车机做热点」。
+     *
+     * <p>实测依据（2026-10-14，HUAWEI MRX-W09 / Android 12 作车机端，手机为 vivo X300）：
+     * 关掉 EasyLog 的缺类问题后，SDK 能 `✓ startAdvertise() = true`、能下发配对码，但协商到
+     * <b>{@code onConnectingProgress 10} 就掉回 0</b>，随后 SDK 报 {@code STATE_10003} / {@code STATE_10008}。
+     * 这与社区车机端圈子记录的现象完全一致 —— 「vivo 卡在 10%，解决方法是去掉 AP」
+     * （见 https://www.cnblogs.com/gnz48/p/18346101 ）。
+     *
+     * <p>机理：{@code WifiApService} 建热点要 {@code TETHER_PRIVILEGED} / {@code OVERRIDE_WIFI_CONFIG}
+     * / {@code NETWORK_SETTINGS}，这些是 {@code signature|privileged} 权限，**侧载应用永远拿不到**，
+     * 所以热点这条数据通道根本不可能起来；但车机仍在 {@code GetUCarConfig} 里向手机宣称「我支持 AP」，
+     * 手机（vivo/OPPO 尤其）会优先选 AP，把会话建在一个不存在的热点上 → 卡在 10% 后失败。
+     * 只留 P2P 时，{@code WifiP2pService} 只用普通权限（API 31 定位 / API 33+ NEARBY_WIFI_DEVICES），
+     * 才有机会真正把组拉起来。
+     *
+     * <p>若你的车机是系统签名/预装（真的能开热点），改成 {@code true} 即可恢复两种通道。
+     */
+    private static final boolean SUPPORT_SOFT_AP = false;
+
+    /** 会话是否已真正建立（手机已连上）。由连接回调维护，看门狗据此避让。 */
     private volatile boolean sessionActive = false;
+
+    /** 进入 CONNECTING 的时刻；0 表示当前不在协商中。 */
+    private volatile long connectingSince = 0L;
+
+    /** 最后一次「协商有进展」的时刻（onPinCode / onConnectingProgress）。 */
+    private volatile long lastConnectProgressAt = 0L;
 
     /**
      * 会话结束后的重新广播。
@@ -102,14 +153,26 @@ public class IccoaManager {
      * <p>这是「刷新出来的新码没人来连，之后就再也不刷新」的解法 —— 那种情况下手机端弹窗
      * 已经关掉，车机只能靠重播把它重新叫出来，否则用户点开 CarWith 也发现不了车机。
      *
-     * <p>避让规则：手机正在连接或已连上（{@link #sessionActive}）、或画面已经投出去
-     * （{@code castStarted}）时一律跳过，绝不打断进行中的会话。新码下发时计时会重置，
-     * 保证用户拿到完整的 30 秒去输入。
+     * <p>避让规则只有两条：
+     * <ul>
+     *   <li>手机<b>已经连上</b>（{@link #sessionActive}）或画面已经投出去（{@code castStarted}）
+     *       —— 绝不打断进行中的会话；</li>
+     *   <li>手机<b>正在协商</b>且距最后一次进展不超过 {@link #STUCK_CONNECTING_MS}
+     *       —— 给首次配对留出看码/确认的时间，超时未果则重播救回。</li>
+     * </ul>
      */
     private final Runnable autoRefreshRunnable = () -> {
         if (!sdkReady || adapter == null) return;
         if (sessionActive || castStarted) {
-            log("自动刷新：会话进行中，跳过本轮");
+            log("自动刷新：会话已建立，跳过本轮");
+            scheduleAutoRefresh();
+            return;
+        }
+        long now = System.currentTimeMillis();
+        long anchor = Math.max(connectingSince, lastConnectProgressAt);
+        if (anchor > 0 && connectingSince > 0 && now - anchor < STUCK_CONNECTING_MS) {
+            log("自动刷新：手机正在协商（" + ((now - anchor) / 1000) + "s 无进展，"
+                    + (STUCK_CONNECTING_MS / 1000) + "s 后才重播），本轮让位");
             scheduleAutoRefresh();
             return;
         }
@@ -137,6 +200,38 @@ public class IccoaManager {
 
     public void setScreenSize(int w, int h) {
         screenW = w; screenH = h; videoW = w; videoH = h;
+    }
+
+    /** 投屏显示区宽度 —— 与 {@code UCarConfig.setVideoDisplayWidth()} 声明的一致。 */
+    public int getDisplayWidth() { return videoW; }
+
+    /** 投屏显示区高度 —— 与 {@code UCarConfig.setVideoDisplayHeight()} 声明的一致。 */
+    public int getDisplayHeight() { return videoH; }
+
+    /**
+     * 把车机侧的触摸事件回传给手机（SDK 的 UIBC 回传通道）。
+     *
+     * <p>参数与 {@code UCarAdapter.sendTouchEvent} 完全对应，签名来自 SDK 的
+     * {@code MethodParameters}：{@code (action, count, trackID[], x[], y[])}。
+     *
+     * <ul>
+     *   <li>{@code action}：直接用 {@link android.view.MotionEvent#getAction()} 的原始值
+     *       （**不要** {@code actionMasked}）—— 参考实现 SDK 自带的
+     *       {@code com.ucar.vehiclesdk.UCarSurfaceView.onTouchEvent()} 就是这么传的；</li>
+     *   <li>{@code trackID[i]}：{@code event.getPointerId(i)}；</li>
+     *   <li>{@code x[i]} / {@code y[i]}：**display 空间**坐标（即 {@code videoDisplayWidth/Height}
+     *       那块区域）。SDK 内部会按 {@code x / displayWidth * sourceWidth} 换算成手机屏幕坐标，
+     *       所以这里传 SurfaceView 上的坐标时，要先按视图尺寸缩放到 display 尺寸。</li>
+     * </ul>
+     */
+    public boolean sendTouchEvent(int action, int count, int[] trackId, int[] x, int[] y) {
+        if (adapter == null) return false;
+        try {
+            return adapter.sendTouchEvent(action, count, trackId, x, y);
+        } catch (Throwable t) {
+            log("sendTouchEvent 异常: " + t);
+            return false;
+        }
     }
 
     public String getLastPinCode() { return lastPinCode; }
@@ -218,6 +313,10 @@ public class IccoaManager {
         castStarted = false;
         castRetry = 0;
         lastPinCode = null;
+        // 重播即「重新开始一轮待连」：清掉协商计时，免得上一轮的残留把看门狗一直摁住。
+        sessionActive = false;
+        connectingSince = 0L;
+        lastConnectProgressAt = 0L;
         doAdvertise();
     }
 
@@ -250,6 +349,8 @@ public class IccoaManager {
         main.removeCallbacks(reAdvertiseRunnable);
         cancelAutoRefresh();
         sessionActive = false;
+        connectingSince = 0L;
+        lastConnectProgressAt = 0L;
         castStarted = false;
         sdkReady = false;
         lastPinCode = null;
@@ -269,6 +370,8 @@ public class IccoaManager {
             try { adapter.disconnect(); } catch (Throwable t) { log("disconnect 异常: " + t); }
         }
         sessionActive = false;
+        connectingSince = 0L;
+        lastConnectProgressAt = 0L;
         castStarted = false;
         lastPinCode = null;
         scheduleReAdvertise();
@@ -281,6 +384,7 @@ public class IccoaManager {
 
     private void doAdvertise() {
         if (adapter == null) return;
+        log("广播参数：P2P=true SoftAP=" + SUPPORT_SOFT_AP + " 屏幕=" + screenW + "x" + screenH);
         boolean ok = adapter.startAdvertise();
         log((ok ? "✓ " : "✗ ") + "startAdvertise() = " + ok);
         tryStartCast();
@@ -321,7 +425,10 @@ public class IccoaManager {
         public void onPinCode(String pinCode, String carDeviceName) {
             lastPinCode = pinCode;
             log("★ onPinCode pinCode=" + pinCode + " carDeviceName=" + carDeviceName);
-            // 新码下发 → 看门狗重新计时，保证用户拿到完整的有效期去确认，不会刚出码就被重播顶掉。
+            // 新码下发 = 这一轮协商刚刚有新进展 → 看门狗重新计时，保证用户拿到完整的有效期去确认，
+            // 也保证不会刚出码就被重播顶掉。
+            connectingSince = System.currentTimeMillis();
+            lastConnectProgressAt = connectingSince;
             scheduleAutoRefresh();
             main.post(() -> listener.onPinCode(pinCode, carDeviceName));
         }
@@ -333,17 +440,30 @@ public class IccoaManager {
                 // 会话真正结束（不是启动时的初始 DISCONNECTED）。清掉已过期的配对码并延时重新
                 // 广播：手机端 CarWith 会重新发现车机并触发一次全新配对（新的 onPinCode）。
                 sessionActive = false;
+                connectingSince = 0L;
+                lastConnectProgressAt = 0L;
                 lastPinCode = null;
                 castStarted = false;
                 scheduleReAdvertise();
                 scheduleAutoRefresh();
-            } else if (newState == 2 || newState == 3) {
-                // 已连上：撤销任何待执行的重新广播，免得刚连上就被重启广播打断；看门狗也会因此空转。
+            } else if (newState >= 2) {
+                // 已连上：2 = CONNECTED、3 = ESTABLISHED，SDK 实测还会发 4。
+                // 撤销任何待执行的重新广播，免得刚连上就被重启广播打断（那会把会话连同投屏一起拆掉）；
+                // 看门狗也会因此空转。
                 sessionActive = true;
+                connectingSince = 0L;
+                lastConnectProgressAt = 0L;
+                main.removeCallbacks(reAdvertiseRunnable);
+            } else if (newState == 1) {
+                // 协商中：这一段**不算** sessionActive —— 看门狗必须保留「救回僵死协商」的能力。
+                // 它改为按时间避让：只要距最后一次进展不超过 STUCK_CONNECTING_MS 就让位，
+                // 超过就重播。若这里改成 sessionActive = true，SDK 一旦停在 CONNECTING 不回落到
+                // DISCONNECTED，看门狗就永远不再重播，手机端连配对提示都不会再出现。
+                connectingSince = System.currentTimeMillis();
+                lastConnectProgressAt = connectingSince;
+                sessionActive = false;
                 main.removeCallbacks(reAdvertiseRunnable);
             }
-            // newState == 1（CONNECTING）刻意不置 sessionActive：若协商卡死超过一个刷新周期，
-            // 看门狗需要能重播把它救回来。正常协商只需数秒，30 秒的余量足够。
             final int st = newState;
             main.post(() -> listener.onConnectionState(st));
         }
@@ -351,6 +471,10 @@ public class IccoaManager {
         @Override
         public void onConnectingProgress(String phoneId, int progress) {
             log("onConnectingProgress " + progress);
+            // 有进度 = 这条链路还活着，把「僵死」计时往后推。
+            lastConnectProgressAt = System.currentTimeMillis();
+            final int p = progress;
+            main.post(() -> listener.onConnectProgress(p));
         }
 
         @Override
@@ -368,12 +492,15 @@ public class IccoaManager {
             UCarCommon.WorkMode chosen;
             if (supported == null) {
                 chosen = UCarCommon.WorkMode.NONE;
-            } else if (supported.isSupportAppWindowCast()) {
-                chosen = UCarCommon.WorkMode.APP_WINDOW_CAST;
+            } else if (supported.isSupportNormalCast()) {
+                // ★ 先选 NORMAL_CAST：本车机在 UCarConfig 里只声明了 {@code setSupportNormalCast(true)}，
+                //   渲染也是往一个普通 Surface 上投。之前的顺序优先挑 AppWindowCast（融合桌面小窗），
+                //   与声明的能力不一致，属于「手机按小窗模式协商、车机按整屏 Surface 收流」的错配。
+                chosen = UCarCommon.WorkMode.NORMAL_CAST;
             } else if (supported.isSupportAppFullScreenCast()) {
                 chosen = UCarCommon.WorkMode.APP_FULLSCREEN_CAST;
-            } else if (supported.isSupportNormalCast()) {
-                chosen = UCarCommon.WorkMode.NORMAL_CAST;
+            } else if (supported.isSupportAppWindowCast()) {
+                chosen = UCarCommon.WorkMode.APP_WINDOW_CAST;
             } else if (supported.isSupportDataTransfer()) {
                 chosen = UCarCommon.WorkMode.DATA_TRANSFER;
             } else {
@@ -445,7 +572,11 @@ public class IccoaManager {
                 .setVideoDisplayWidth(vw)
                 .setVideoDisplayHeight(vh)
                 .setSupportP2P(true)
-                .setSupportSoftAP(true)
+                // SoftAP（车机做热点）：开关见 SUPPORT_SOFT_AP 的注释。侧载应用拿不到
+                // TETHER_PRIVILEGED / OVERRIDE_WIFI_CONFIG / NETWORK_SETTINGS（signature|privileged），
+                // 热点其实起不来；若无脑向手机宣称「支持 AP」，选 AP 的手机会把会话建在
+                // 一个不存在的热点上（社区实测 vivo 最容易卡住），所以这个开关值得按需关掉。
+                .setSupportSoftAP(SUPPORT_SOFT_AP)
                 .setSupportCamera(false)
                 .setSupportHevc(false)
                 .setSupportMic(true)
@@ -468,8 +599,13 @@ public class IccoaManager {
         if (saved != null && !saved.isEmpty()) {
             try {
                 byte[] cached = Base64.decode(saved, Base64.NO_WRAP);
-                if (cached != null && cached.length == 6) return cached;
-                log("carId 缓存长度≠6，作废重生成");
+                // 旧版本缓存下来的 02:00:00:00:00:00（Android 的占位蓝牙地址）要一并作废，
+                // 否则打过补丁也仍然在用那个假身份。
+                if (cached != null && cached.length == 6 && cached[0] != 0
+                        && !"02:00:00:00:00:00".equals(toMacString(cached))) {
+                    return cached;
+                }
+                log("carId 缓存不可用（长度≠6 / 占位地址 02:00:00:00:00:00）→ 作废重生成");
             } catch (Throwable t) {
                 log("carId 缓存解码失败: " + t);
             }
@@ -483,26 +619,102 @@ public class IccoaManager {
         return raw;
     }
 
+    /**
+     * 车机蓝牙 MAC —— SDK 的 {@code UCarConfig.setCarBrMac()}，也就是车机对手机自称的蓝牙身份。
+     *
+     * <p>老实现直接读 {@link android.bluetooth.BluetoothAdapter#getAddress()}，但 Android 6 起这个
+     * 调用对**非系统应用恒返回占位地址 {@code 02:00:00:00:00:00}**（还需要
+     * {@code LOCAL_MAC_ADDRESS}，同样是 privileged 权限）。照单全收的结果是：所有 MiAuto 车机都
+     * 自称同一个不存在的蓝牙设备，手机端按这个地址去认车/回连时必然对不上。真实车机（系统签名、
+     * 或社区那些预装的车机端 App）拿到的是真地址，这也是 MiAuto 与它们的差异之一。
+     *
+     * <p>顺序：手动指定 → {@code Settings.Secure.bluetooth_address}（特权应用可读）→ 适配器地址
+     * （只接受真实地址，占位地址视为读不到）→ 随机 6 字节。手动指定写进
+     * {@code car_id_prefs/car_id_override_mac}，格式 {@code AA:BB:CC:DD:EE:FF}：把平板设置里
+     * 看到的蓝牙地址填进去，即可让手机端按真实地址认车。
+     */
     @android.annotation.SuppressLint("MissingPermission")
     private byte[] getBluetoothMac() {
-        byte[] macBytes = new byte[6];
+        SharedPreferences prefs = appCtx.getSharedPreferences("car_id_prefs", Context.MODE_PRIVATE);
+
+        byte[] override = parseRealMac(prefs.getString(CAR_ID_OVERRIDE_KEY, null));
+        if (override != null) {
+            log("carId 采用手动指定的蓝牙 MAC: " + toMacString(override));
+            return override;
+        }
+
+        byte[] fromSettings = parseRealMac(readSecureString("bluetooth_address"));
+        if (fromSettings != null) {
+            log("carId 采用 Settings.Secure 里的蓝牙 MAC: " + toMacString(fromSettings));
+            return fromSettings;
+        }
+
+        byte[] fromAdapter = parseRealMac(readAdapterAddress());
+        if (fromAdapter != null) {
+            log("carId 采用适配器蓝牙 MAC: " + toMacString(fromAdapter));
+            return fromAdapter;
+        }
+
+        log("carId 读不到真实蓝牙 MAC（Android 6+ 非系统应用只会得到 02:00:00:00:00:00）→ 随机 6 字节；"
+                + "若手机端需要按真实车机蓝牙地址认车，请写入 car_id_prefs/" + CAR_ID_OVERRIDE_KEY);
+        return null;   // 交给调用方随机生成
+    }
+
+    /** 覆盖车机蓝牙 MAC 的偏好键（{@code AA:BB:CC:DD:EE:FF}）。 */
+    private static final String CAR_ID_OVERRIDE_KEY = "car_id_override_mac";
+
+    private String readSecureString(String key) {
+        try {
+            return android.provider.Settings.Secure.getString(appCtx.getContentResolver(), key);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private String readAdapterAddress() {
         try {
             android.bluetooth.BluetoothManager bm =
                     (android.bluetooth.BluetoothManager) appCtx.getSystemService(Context.BLUETOOTH_SERVICE);
             android.bluetooth.BluetoothAdapter a = (bm == null) ? null : bm.getAdapter();
-            String mac = (a == null) ? null : a.getAddress();
-            if (mac != null) {
-                String[] seg = mac.split(":");
-                if (seg.length == 6) {
-                    for (int i = 0; i < 6; i++) macBytes[i] = (byte) Integer.parseInt(seg[i], 16);
-                    return macBytes;
-                }
-            }
+            return (a == null) ? null : a.getAddress();
         } catch (Throwable t) {
-            log("读蓝牙 MAC 被拒（缺 BLUETOOTH_CONNECT？）: " + t);
+            log("读蓝牙 MAC 被拒（缺 BLUETOOTH_CONNECT / LOCAL_MAC_ADDRESS？）: " + t);
+            return null;
         }
-        new Random().nextBytes(macBytes);
-        return macBytes;
+    }
+
+    /**
+     * 解析并校验一个「像真的」的蓝牙 MAC。
+     *
+     * <p>拒绝：空值、{@code 02:00:00:00:00:00}（Android 的占位地址）、段数不是 6、非十六进制、
+     * 以及首字节为 0（全零/异常地址）。返回 null 表示「拿不到可用地址」。
+     */
+    private byte[] parseRealMac(String mac) {
+        if (mac == null) return null;
+        String s = mac.trim();
+        if (s.isEmpty() || "02:00:00:00:00:00".equals(s)) return null;
+        String[] seg = s.split(":");
+        if (seg.length != 6) return null;
+        byte[] out = new byte[6];
+        for (int i = 0; i < 6; i++) {
+            if (seg[i].length() != 2) return null;
+            try {
+                out[i] = (byte) Integer.parseInt(seg[i], 16);
+            } catch (NumberFormatException e) {
+                return null;
+            }
+        }
+        if (out[0] == 0) return null;
+        return out;
+    }
+
+    private static String toMacString(byte[] mac) {
+        StringBuilder sb = new StringBuilder(17);
+        for (int i = 0; i < mac.length; i++) {
+            if (i > 0) sb.append(':');
+            sb.append(String.format("%02X", mac[i] & 0xFF));
+        }
+        return sb.toString();
     }
 
     private void log(String msg) {
