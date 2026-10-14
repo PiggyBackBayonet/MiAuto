@@ -133,6 +133,16 @@ class IcocaBridge(context: Context) : IccoaManager.Listener {
      */
     fun setSurface(surface: Surface) = manager.setSurface(surface)
 
+    /**
+     * The projection surface went away (activity finished, window rebuilt, screen off).
+     *
+     * Stopping the cast here is what keeps the video pipeline alive across a surface change: the
+     * SDK's decoder writes into that specific BufferQueue, and letting it keep writing into a
+     * destroyed one ends the video permanently - black screen, audio still playing, phone still
+     * reporting a healthy connection.
+     */
+    fun onSurfaceDestroyed() = manager.onSurfaceDestroyed()
+
     /** Last PIN the SDK issued, or null. Useful when the projection activity opens late. */
     fun lastPinCode(): String? = manager.lastPinCode
 

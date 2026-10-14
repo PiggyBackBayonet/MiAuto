@@ -61,6 +61,14 @@ public class IccoaManager {
     private UCarAdapter adapter = null;
     private Surface surface = null;
 
+    /**
+     * 已经交给 SDK 投屏的那块 Surface（{@code startCast()} 的入参）。
+     *
+     * <p>用来判断「新来的 Surface 是不是换了人」：换了就必须先 {@code pauseCast()}，
+     * 否则 SDK 会继续往已废弃的 BufferQueue 写帧，视频通道会永久失效（黑屏但有声音）。
+     */
+    private volatile Surface boundSurface = null;
+
     /** {@link #tryStartCast()} 的重试预算（×500ms = 最长 10 秒）。 */
     private static final int CAST_RETRY_MAX = 20;
     private int castRetry = 0;
@@ -238,9 +246,42 @@ public class IccoaManager {
 
     /** Surface 就绪 / 变化（Activity 的 surfaceChanged 回调里调用）。 */
     public void setSurface(Surface s) {
+        boolean replaced = castStarted && s != boundSurface;
         this.surface = s;
         castRetry = 0;          // 新 Surface 到位，重试预算重置
+        if (replaced) {
+            // ★ Surface 被换掉了（返回键退出投屏页、再重新打开，或系统重建了窗口）。
+            //
+            // 必须先 pauseCast：SDK 的视频解码器是**绑在具体那块 BufferQueue 上**的。旧 Surface
+            // 被销毁后如果继续往里写帧，系统会报
+            //   "BufferQueue has been abandoned" / "queueBuffer: error queuing buffer, -19"，
+            // 随后 UCar_VideoPlayerV2 报 { errorCode: -19, isRecoverable: false } —— 视频通道
+            // **永久**死掉，而音频走的是另一条通道，于是表现为「黑屏但声音照旧、手机仍显示已连接」。
+            pauseCastInternal("Surface 被替换");
+        }
         tryStartCast();
+    }
+
+    /**
+     * Surface 被销毁（Activity 的 {@code surfaceDestroyed} 回调）：让 SDK 停手。
+     *
+     * <p>不做这一步，SDK 就会继续往已经废弃的 BufferQueue 写帧，后果见 {@link #setSurface}。
+     */
+    public void onSurfaceDestroyed() {
+        surface = null;
+        if (castStarted) {
+            pauseCastInternal("Surface 已销毁");
+        }
+    }
+
+    /** 停掉投屏但保留会话（音频/投屏会话不受影响），并清掉「已绑定」的记账。 */
+    private void pauseCastInternal(String why) {
+        log(why + " → pauseCast()（避免继续写已废弃的 BufferQueue）");
+        if (adapter != null) {
+            try { adapter.pauseCast(); } catch (Throwable t) { log("pauseCast 异常: " + t); }
+        }
+        castStarted = false;
+        boundSurface = null;
     }
 
     // ==================================================================
@@ -311,6 +352,7 @@ public class IccoaManager {
         try { adapter.stopAdvertise(); } catch (Throwable t) { log("stopAdvertise(重播前) 异常: " + t); }
         sdkReady = true;
         castStarted = false;
+        boundSurface = null;
         castRetry = 0;
         lastPinCode = null;
         // 重播即「重新开始一轮待连」：清掉协商计时，免得上一轮的残留把看门狗一直摁住。
@@ -352,6 +394,7 @@ public class IccoaManager {
         connectingSince = 0L;
         lastConnectProgressAt = 0L;
         castStarted = false;
+        boundSurface = null;
         sdkReady = false;
         lastPinCode = null;
         // 保留 sdkInitialized —— init() 进程一次性，重启只走 reAdvertise()。
@@ -373,6 +416,7 @@ public class IccoaManager {
         connectingSince = 0L;
         lastConnectProgressAt = 0L;
         castStarted = false;
+        boundSurface = null;
         lastPinCode = null;
         scheduleReAdvertise();
         scheduleAutoRefresh();
@@ -410,6 +454,8 @@ public class IccoaManager {
         castRetry = 0;
         boolean ok = adapter.startCast(s, videoW, videoH);
         castStarted = ok;
+        // 记住「SDK 正在往哪块 Surface 画」：换 Surface 时靠它判断需不需要先 pauseCast。
+        boundSurface = ok ? s : null;
         log((ok ? "✓ " : "✗ ") + "startCast(" + videoW + "x" + videoH + ") = " + ok);
         if (ok) {
             main.post(listener::onCastStarted);
@@ -444,6 +490,7 @@ public class IccoaManager {
                 lastConnectProgressAt = 0L;
                 lastPinCode = null;
                 castStarted = false;
+                boundSurface = null;
                 scheduleReAdvertise();
                 scheduleAutoRefresh();
             } else if (newState >= 2) {

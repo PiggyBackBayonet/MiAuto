@@ -58,6 +58,10 @@ class IcocaProjectionActivity : AppCompatActivity() {
 
                 override fun surfaceDestroyed(holder: SurfaceHolder) {
                     AppLog.i("ICCOA projection: surfaceDestroyed")
+                    // Tell the SDK to stop before it writes another frame: its decoder is bound to
+                    // this BufferQueue, and writing into a destroyed one kills the video pipeline
+                    // for good (error -19, isRecoverable: false) while the audio path keeps playing.
+                    bridge.onSurfaceDestroyed()
                 }
             }
         )
