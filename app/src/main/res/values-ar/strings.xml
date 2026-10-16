@@ -593,6 +593,7 @@
 
     <string name="software_video_decoder">مصدر برنامج فك الترميز</string>
     <string name="software_video_decoder_bundled">FFmpeg مدمج</string>
+    <string name="software_video_decoder_bundled_unavailable">FFmpeg المضمّن غير متاح على هذا الجهاز</string>
     <string name="software_video_decoder_device">MediaCodec للجهاز</string>
 
     <string name="btn_show_qr">عرض رمز QR</string>

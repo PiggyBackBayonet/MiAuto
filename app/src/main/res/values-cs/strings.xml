@@ -593,6 +593,7 @@
 
     <string name="software_video_decoder">Zdroj softwarového dekodéru</string>
     <string name="software_video_decoder_bundled">Integrovaný FFmpeg</string>
+    <string name="software_video_decoder_bundled_unavailable">Vestavěný FFmpeg není v tomto zařízení dostupný</string>
     <string name="software_video_decoder_device">MediaCodec zařízení</string>
 
     <string name="btn_show_qr">Zobrazit QR kód</string>

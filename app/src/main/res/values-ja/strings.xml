@@ -601,6 +601,7 @@
 
     <string name="software_video_decoder">ソフトウェアデコーダのソース</string>
     <string name="software_video_decoder_bundled">内蔵FFmpeg</string>
+    <string name="software_video_decoder_bundled_unavailable">内蔵 FFmpeg はこのデバイスでは利用できません</string>
     <string name="software_video_decoder_device">デバイスのMediaCodec</string>
 
     <string name="btn_show_qr">QRコードを表示</string>

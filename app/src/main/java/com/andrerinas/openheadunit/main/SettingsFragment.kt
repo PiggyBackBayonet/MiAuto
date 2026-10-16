@@ -31,6 +31,7 @@ import com.andrerinas.openheadunit.aap.MediaKeyRoutingPolicy
 import com.andrerinas.openheadunit.aap.PlaybackFocusPolicy
 import com.andrerinas.openheadunit.aap.VideoFaultInjector
 import com.andrerinas.openheadunit.decoder.DeviceMemoryProfile
+import com.andrerinas.openheadunit.decoder.VideoDecoder
 import com.andrerinas.openheadunit.main.settings.SettingItem
 import com.andrerinas.openheadunit.main.settings.SettingsAdapter
 import com.andrerinas.openheadunit.utils.AppLog
@@ -1507,17 +1508,27 @@ class SettingsFragment : Fragment() {
         ))
 
         if (pendingForceSoftware == true) {
+            // The bundled FFmpeg decoder only exists in the ABIs that ship
+            // libavcodec/libavutil/libswscale — arm64-v8a today, so 32-bit ARM
+            // head units have the JNI stub but no decoder behind it. Report that as
+            // unavailable rather than hiding the choice: a control that hides itself
+            // is indistinguishable from a feature that was never built.
+            val bundledHevcAvailable = VideoDecoder.isBundledHevcDecoderAvailable()
+            val bundledLabel = if (bundledHevcAvailable)
+                getString(R.string.software_video_decoder_bundled)
+            else
+                getString(R.string.software_video_decoder_bundled_unavailable)
             items.add(SettingItem.SettingEntry(
                 stableId = "softwareVideoDecoder",
                 nameResId = R.string.software_video_decoder,
                 value = when (pendingSoftwareVideoDecoder) {
                     Settings.SoftwareVideoDecoder.DEVICE_MEDIACODEC -> getString(R.string.software_video_decoder_device)
-                    Settings.SoftwareVideoDecoder.BUNDLED_FFMPEG -> getString(R.string.software_video_decoder_bundled)
+                    Settings.SoftwareVideoDecoder.BUNDLED_FFMPEG -> bundledLabel
                     null -> ""
                 },
                 onClick = { _ ->
                     val decoders = arrayOf(
-                        getString(R.string.software_video_decoder_bundled),
+                        bundledLabel,
                         getString(R.string.software_video_decoder_device)
                     )
                     val decoderValues = arrayOf(
@@ -1528,8 +1539,20 @@ class SettingsFragment : Fragment() {
                     MaterialAlertDialogBuilder(requireContext(), R.style.DarkAlertDialog)
                         .setTitle(R.string.software_video_decoder)
                         .setSingleChoiceItems(decoders, currentDecoderIndex) { dialog, which ->
-                            pendingSoftwareVideoDecoder = decoderValues[which]
-                            checkChanges()
+                            val picked = decoderValues[which]
+                            if (!bundledHevcAvailable &&
+                                picked == Settings.SoftwareVideoDecoder.BUNDLED_FFMPEG) {
+                                // Selecting it would silently decode nothing, so keep the
+                                // previous value and explain why the entry reads unavailable.
+                                Toast.makeText(
+                                    requireContext(),
+                                    R.string.software_video_decoder_bundled_unavailable,
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            } else {
+                                pendingSoftwareVideoDecoder = picked
+                                checkChanges()
+                            }
                             dialog.dismiss()
                             updateSettingsList()
                         }

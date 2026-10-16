@@ -69,6 +69,16 @@ if(HUR_FFMPEG_READY)
     target_include_directories(hur_soft_hevc PRIVATE "${FFMPEG_INCLUDE_DIR}")
     target_link_libraries(hur_soft_hevc PRIVATE ${FFMPEG_LIBS})
 else()
+    # Not a failure: the bundled decoder is optional and the app falls back to the
+    # device's MediaCodec. But on a 32-bit ABI the checked-in FFmpeg builds do not
+    # exist, so this is the expected state there and it is worth saying out loud —
+    # the APK then carries a JNI stub with no decoder behind it, and Settings reports
+    # the bundled decoder as unavailable for that CPU.
+    message(WARNING
+        "HUR FFmpeg for ${ANDROID_ABI}: NOT AVAILABLE — no libavcodec/libavutil/"
+        "libswscale in ${FFMPEG_LIB_DIR}, so hur_soft_hevc is built without the "
+        "bundled software HEVC decoder and H.265 falls back to MediaCodec. See "
+        "app/src/main/cpp/ffmpeg/README.md to add the libraries for this ABI.")
     target_compile_definitions(hur_soft_hevc PRIVATE HUR_HAVE_FFMPEG=0)
 endif()
 

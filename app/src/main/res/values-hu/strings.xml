@@ -592,6 +592,7 @@
 
     <string name="software_video_decoder">Szoftveres dekódoló forrása</string>
     <string name="software_video_decoder_bundled">Beépített FFmpeg</string>
+    <string name="software_video_decoder_bundled_unavailable">A beágyazott FFmpeg nem érhető el ezen az eszközön</string>
     <string name="software_video_decoder_device">Eszköz MediaCodec</string>
 
     <string name="btn_show_qr">QR-kód megjelenítése</string>

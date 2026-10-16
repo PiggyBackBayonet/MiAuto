@@ -458,7 +458,7 @@ MiAuto = **DiAuto Pro 的"后半身"** + **ICCOA CarLink SDK 的"前半身"**。
 | **R2** | **手机端策略不可控** | 🔴 高 | CarWith 的车机识别/白名单/弹窗策略**不在这个 APK 里**，无法静态证明它"永远不校验"。样本能连是**实测事实**，但可能随 CarWith 版本变化 | 锁定验证过的 CarWith 版本；把"手机端行为"列为每次升级必测项；README 写明兼容性边界 |
 | **R3** | **私有系统权限** | 🔴 高 | 样本申请 8 个**非系统应用拿不到**的权限：`BLUETOOTH_PRIVILEGED` / `NETWORK_STACK` / `TETHER_PRIVILEGED` / `MANAGE_USB` / `OVERRIDE_WIFI_CONFIG` / `NETWORK_SETTINGS` / `LOCAL_MAC_ADDRESS` / `WRITE_SETTINGS`。**这是按预装系统应用设计的** | POC-1 实测：普通 APK 安装后这些权限是否被拒。若必须 → 需要 **root / 平台签名 / 车机厂商合作**（这会把项目性质从"个人自用"推高到"要谈授权"） |
 | **R4** | **debug 签名 + `debuggable=true`** | 🟡 中 | 样本用 **Android 调试密钥**签名（`CN=Android, O=Android`，SHA-1 `61ed377e…af81`），manifest `android:debuggable="true"` + `allowBackup="true"` | 自用时无妨；**重新签名**即可消除（用你自己的 keystore）。注意重签后 `ccd.data` 不受影响（证书不带签名绑定） |
-| **R5** | **仅 arm64-v8a** | 🟡 中 | `lib/` 只有 `arm64-v8a`，`libusbio.so` / `libovmsink.so` 无 32 位版本 | 确认车机 SoC 是 64 位（BYD DiLink 原车机是 arm64，DiAuto Pro 已在跑）。若车机只有 armeabi-v7a → **此路不通** |
+| **R5** | **32 位 ABI 缺内置软解** | 🟡 中 | 样本 `lib/` 只有 `arm64-v8a`，`libusbio.so` / `libovmsink.so` 无 32 位版本。但静态核对 `MiAuto-0.1.1.apk`：**发布包四 ABI 齐全**，`armeabi-v7a/` 下有 `libusbhelper.so` / `libusb1.0.so` / `liblocal_hotspot_radio.so` / `libconscrypt_jni.so` / `libhur_soft_hevc.so` —— 正是 App 自身 `System.loadLibrary()` 会用到的那几个。那两个样本残留库在 Java/Kotlin 源码和 SDK dex 里都没有 `.so` 引用，不构成阻塞。真正缺的只有 **FFmpeg 软解**（`libavcodec` / `libavutil` / `libswscale` 仅 arm64） | armeabi-v7a 车机**装得上**：manifest `minSdkVersion=16`、`uses-feature` 全部 `required=false`，不会因 ABI 或硬件被拒装。设置页会把「内置 FFmpeg」如实标为不可用，H.265 回退 MediaCodec。要恢复 32 位软解：按 `app/src/main/cpp/ffmpeg/README.md` 交叉编译该 ABI 的三个 `.so` 放进 `jniLibs/armeabi-v7a/`。**能否连接另受 R3（特权权限）与 BLE 广播（需 API 21+）约束，32 位真机尚未验证** |
 | **R6** | **第三方换皮 + 水印证书** | 🟡 中 | 包是吉利换皮的 ICCOA 官方 demo，内置证书带**泄漏溯源水印**（`short_name` 里夹 `0/1/2/3`），`vendor_id=0001` | 用 `setCcdFilePath()` 换成**自造证书**（校验逻辑为零，见 §3.4）。不要原样分发这份带水印的包 |
 | **R7** | **无开源、无许可证** | 🟡 中 | 样本**未附任何 LICENSE**，SDK 与原生库的来源/授权范围不明 | 自用无碍；**公开分发前**需澄清授权（这本质上等同于第 R8 条）。README 不声称"官方 SDK" |
 | **R8** | **联盟凭据合规** | 🟡 中 | ICCOA 车机端 SDK 是联盟发给成员的**凭据**。自己做、自己用没问题；**要对外发布产品仍需过 ICCOA 认证** | 保持"个人自用 / 自研"边界；若要对公众发布 → 走 §10 的合规路径 |
@@ -730,7 +730,7 @@ adapter.init(appContext, cfg, new ICarInitCallback() {
 |---|---|---|
 | 手机 BLE 扫到车机 | ✅ 手机弹出识别提示 | 🔴 完全没反应 → 检查 `BLUETOOTH_PRIVILEGED` 是否被拒（R3） |
 | 配对 | ✅ 弹 PIN 码 + 确认框 | 🔴 提示"非认证设备" → **R2 命中，需换更新样本** |
-| `onInitSuccess` | ✅ | 🔴 报错 → 看错误码，多半是权限或 so 未加载（`armeabi-v7a` 会直接崩） |
+| `onInitSuccess` | ✅ | 🔴 报错 → 看错误码，多半是权限或 so 未加载（`armeabi-v7a` 下样本的 so 会加载失败；MiAuto 自身所需 so 四 ABI 齐全，见 R5） |
 | `startCast` 后 | ✅ 车机出现纯色画面 | 🔴 手机弹"协议版本不支持" → **R1 命中** |
 
 完整判定表（含 `onInitFailed(10001)`、`onReconfigureWifiInfo` 等分支）见 `poc1/README.md` §五。

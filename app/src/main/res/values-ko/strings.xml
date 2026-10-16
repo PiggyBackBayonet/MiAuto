@@ -227,6 +227,7 @@
     <string name="force_software_decoding_description">일부 기기에서 문제를 해결할 수 있지만 성능이 저하될 수 있습니다</string>
     <string name="software_video_decoder">소프트웨어 디코더 선택</string>
     <string name="software_video_decoder_bundled">내장 FFmpeg</string>
+    <string name="software_video_decoder_bundled_unavailable">내장 FFmpeg은 이 기기에서 사용할 수 없습니다</string>
     <string name="software_video_decoder_device">기기 MediaCodec</string>
     <string name="wireless_mode">무선 모드</string>
     <string name="wireless_mode_description">무선 연결 방식을 선택합니다(수동 목록, 휴대폰 자동 검색 또는 Wireless Helper 모드)</string>
