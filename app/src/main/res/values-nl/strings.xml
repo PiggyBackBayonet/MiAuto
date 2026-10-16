@@ -593,6 +593,7 @@
 
     <string name="software_video_decoder">Software decoder bron</string>
     <string name="software_video_decoder_bundled">Gebundeld FFmpeg</string>
+    <string name="software_video_decoder_bundled_unavailable">Ingebouwde FFmpeg is niet beschikbaar op dit apparaat</string>
     <string name="software_video_decoder_device">Apparaat MediaCodec</string>
 
     <string name="btn_show_qr">QR-code tonen</string>

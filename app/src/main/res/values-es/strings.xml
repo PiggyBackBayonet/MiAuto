@@ -601,6 +601,7 @@
 
     <string name="software_video_decoder">Origen del decodificador de software</string>
     <string name="software_video_decoder_bundled">FFmpeg integrado</string>
+    <string name="software_video_decoder_bundled_unavailable">FFmpeg integrado no está disponible en este dispositivo</string>
     <string name="software_video_decoder_device">MediaCodec del dispositivo</string>
 
     <string name="btn_show_qr">Mostrar código QR</string>

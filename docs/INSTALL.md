@@ -67,6 +67,12 @@ MiAuto 使用**自己的**包名（`com.miauto.app`）和**自己的**发布签�
 - **未在比亚迪或其他量产车机上验证过。** 本版本的真机验证是在一台 Android 11 的 arm64 测试设备上完成的。
 - **仪表盘镜像与挡风玻璃 HUD 导航尚未与 MiAuto 的协议栈一起验证。** 这两条链路继承自基座，
   且默认关闭；若车机未向应用开放仪表区域，设置项会报告「功能不可用」。
+- **32 位车机（`armeabi-v7a`，即 `uname -m` 显示 `armv7l`）可以安装 —— 但有一个功能缺口。**
+  APK 是四 ABI 通用包，不会因 ABI 被拒装。不过内置的 FFmpeg 软件解码只有 arm64 版，
+  32 位上设置里的「内置 FFmpeg」会如实显示为不可用，H.265 只能依赖车机自己的 MediaCodec 硬解。
+- **系统版本不能太低。** ICCOA 链路靠 **BLE 广播**让手机发现车机，而 BLE 广播 API 从
+  **Android 5.0（API 21）** 才存在；manifest 虽然允许装到 Android 4.1，但 4.4 及以下的车机
+  装上也连不上。
 - 手机端需支持 ICCOA CarLink（小米 CarWith / OPPO Car+ 车联 / vivo Jovi InCar 等）；
   这不是 Android Auto，也不是 Apple CarPlay。
 

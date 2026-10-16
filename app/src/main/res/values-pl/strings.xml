@@ -594,6 +594,7 @@
 
     <string name="software_video_decoder">Źródło dekodera programowego</string>
     <string name="software_video_decoder_bundled">Wbudowany FFmpeg</string>
+    <string name="software_video_decoder_bundled_unavailable">Wbudowany FFmpeg jest niedostępny na tym urządzeniu</string>
     <string name="software_video_decoder_device">MediaCodec urządzenia</string>
 
     <string name="btn_show_qr">Pokaż kod QR</string>

@@ -401,6 +401,7 @@
     <string name="force_software_decoding_description">May fix issues on some devices, but is less performant</string>
     <string name="software_video_decoder">Software Decoder Source</string>
     <string name="software_video_decoder_bundled">Bundled FFmpeg</string>
+    <string name="software_video_decoder_bundled_unavailable">Bundled FFmpeg is not available on this device</string>
     <string name="software_video_decoder_device">Device MediaCodec</string>
     <string name="wireless_mode">Wireless Mode</string>
     <string name="wireless_mode_description">Select how the app connects wirelessly (Manual list, Auto-search for Phone, or Wireless Launcher mode)</string>

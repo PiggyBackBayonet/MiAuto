@@ -594,6 +594,7 @@
 
     <string name="software_video_decoder">Джерело програмного декодера</string>
     <string name="software_video_decoder_bundled">Вбудований FFmpeg</string>
+    <string name="software_video_decoder_bundled_unavailable">Вбудований FFmpeg недоступний на цьому пристрої</string>
     <string name="software_video_decoder_device">MediaCodec пристрою</string>
 
     <string name="btn_show_qr">Показати QR-код</string>

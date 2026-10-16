@@ -599,6 +599,7 @@
 
     <string name="software_video_decoder">Nguồn bộ giải mã phần mềm</string>
     <string name="software_video_decoder_bundled">FFmpeg tích hợp</string>
+    <string name="software_video_decoder_bundled_unavailable">FFmpeg tích hợp không khả dụng trên thiết bị này</string>
     <string name="software_video_decoder_device">MediaCodec thiết bị</string>
 
     <string name="btn_show_qr">Hiển thị mã QR</string>

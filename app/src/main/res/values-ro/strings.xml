@@ -594,6 +594,7 @@
 
     <string name="software_video_decoder">Sursă decodor software</string>
     <string name="software_video_decoder_bundled">FFmpeg integrat</string>
+    <string name="software_video_decoder_bundled_unavailable">FFmpeg integrat nu este disponibil pe acest dispozitiv</string>
     <string name="software_video_decoder_device">MediaCodec dispozitiv</string>
 
     <string name="btn_show_qr">Afișează codul QR</string>

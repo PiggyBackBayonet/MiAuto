@@ -593,6 +593,7 @@
 
     <string name="software_video_decoder">軟體解碼器來源</string>
     <string name="software_video_decoder_bundled">內置 FFmpeg</string>
+    <string name="software_video_decoder_bundled_unavailable">內建 FFmpeg 在此裝置上無法使用</string>
     <string name="software_video_decoder_device">裝置 MediaCodec</string>
 
     <string name="btn_show_qr">顯示 QR 碼</string>
